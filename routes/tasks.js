@@ -1,67 +1,141 @@
 const express = require("express");
 const router = express.Router();
+const auth = require("../middleware/auth");
+const validateTask = require("../middleware/validateTask");
+const Task = require("../models/Task");
+const cache = require("../cache/cache");
+const taskEvents = require("../events");
 
-const tasks = require("../data/tasks");
 
-// GET all tasks
-router.get("/", (req, res) => {
-    res.status(200).json(tasks);
-});
+// GET ALL TASKS
 
-// POST new task
-router.post("/", (req, res) => {
+router.get("/", auth, async (req, res, next) => {
+    try {
+        const cachedTasks = cache.get("all_tasks");
 
-    const newTask = {
-        id: tasks.length + 1,
-        title: req.body.title,
-        completed: false
-    };
+      if (cachedTasks !== undefined) {
+            console.log("CACHE HIT");
+            return res.status(200).json(cachedTasks);
+        }
 
-    tasks.push(newTask);
+        console.log("CACHE MISS");
 
-    res.status(201).json(newTask);
+        const tasks = await Task.find();
 
-});
+        cache.set("all_tasks", tasks);
 
-// PUT update task
-router.put("/:id", (req, res) => {
-
-    const id = parseInt(req.params.id);
-
-    const task = tasks.find(t => t.id === id);
-
-    if (!task) {
-        return res.status(404).json({
-            message: "Task not found"
-        });
+        res.status(200).json(tasks);
+    } catch (err) {
+        next(err);
     }
-
-    task.title = req.body.title;
-    task.completed = req.body.completed;
-
-    res.status(200).json(task);
-
 });
 
-// DELETE task
-router.delete("/:id", (req, res) => {
 
-    const id = parseInt(req.params.id);
+// GET TASK BY ID
 
-    const index = tasks.findIndex(t => t.id === id);
+router.get("/:id", auth, async (req, res, next) => {
+    try {
+        const task = await Task.findById(req.params.id);
 
-    if (index === -1) {
-        return res.status(404).json({
-            message: "Task not found"
-        });
+        if (!task) {
+            return res.status(404).json({
+                message: "Task not found"
+            });
+        }
+
+        res.status(200).json(task);
+    } catch (err) {
+        next(err);
     }
-
-    tasks.splice(index, 1);
-
-    res.status(200).json({
-        message: "Task deleted successfully"
-    });
-
 });
+
+
+// CREATE NEW TASK
+
+router.post("/", auth, validateTask, async (req, res, next) => {
+    try {
+        const newTask = await Task.create({
+            title: req.body.title,
+            description: req.body.description,
+            priority: req.body.priority || "medium"
+        });
+
+        // Invalidate cached task list
+        cache.del("all_tasks");
+
+        // Send the response without waiting for notification work
+        res.status(201).json(newTask);
+
+        console.log(
+            "[API] Response sent at:",
+            new Date().toISOString()
+        );
+
+        // Emit the event with task details and authenticated user ID
+        taskEvents.emit("task-created", {
+            task: newTask,
+            assignedUser: req.user?.id || "Unknown"
+        });
+
+    } catch (err) {
+        next(err);
+    }
+});
+
+// UPDATE TASK
+
+router.put("/:id", auth, async (req, res, next) => {
+    try {
+        const updatedTask = await Task.findByIdAndUpdate(
+            req.params.id,
+            req.body,
+            {
+                new: true,
+                runValidators: true
+            }
+        );
+
+        if (!updatedTask) {
+            return res.status(404).json({
+                message: "Task not found"
+            });
+        }
+
+        // Invalidate cached task list
+        cache.del("all_tasks");
+
+        res.status(200).json(updatedTask);
+    } catch (err) {
+        next(err);
+    }
+});
+
+
+// DELETE TASK
+
+router.delete("/:id", auth, async (req, res, next) => {
+    try {
+        const deletedTask = await Task.findByIdAndDelete(req.params.id);
+
+        if (!deletedTask) {
+            return res.status(404).json({
+                message: "Task not found"
+            });
+        }
+
+        // Invalidate cached task list
+        cache.del("all_tasks");
+
+        // Emit task-deleted event
+        taskEvents.emit("task-deleted", deletedTask);
+
+        res.status(200).json({
+            message: "Task deleted successfully"
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 
 module.exports = router;

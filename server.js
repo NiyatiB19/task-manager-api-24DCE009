@@ -4,6 +4,10 @@ const path = require("path");
 const authRoutes = require("./routes/auth");
 require("dotenv").config();
 require("./listeners");
+require("./middleware/auth");
+require("./middleware/errorHandler");
+require("./routes/auth");
+require("./routes/tasks");
 
 const app = express();
 
